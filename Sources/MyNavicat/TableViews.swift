@@ -45,6 +45,7 @@ struct ResultGrid: View {
 
 /// 表详情：结构 / 数据
 struct TableDetailView: View {
+    let connectionID: UUID
     let database: String
     let table: String
 
@@ -55,6 +56,8 @@ struct TableDetailView: View {
             HStack {
                 Text("\(database).\(table)")
                     .font(.headline)
+                Text(app.config(for: connectionID)?.name ?? "")
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Picker("", selection: $segment) {
                     Text("结构").tag(0)
@@ -66,16 +69,19 @@ struct TableDetailView: View {
             .padding(10)
             Divider()
             if segment == 0 {
-                StructureView(database: database, table: table)
+                StructureView(connectionID: connectionID, database: database, table: table)
             } else {
-                DataView(database: database, table: table)
+                DataView(connectionID: connectionID, database: database, table: table)
             }
         }
     }
+
+    @EnvironmentObject var app: AppState
 }
 
 /// 表结构：列定义 + 建表语句
 struct StructureView: View {
+    let connectionID: UUID
     let database: String
     let table: String
 
@@ -139,7 +145,7 @@ struct StructureView: View {
 
     private func load() async {
         do {
-            let s = try await app.session()
+            let s = try await app.session(connectionID: connectionID)
             async let cols = s.tableColumns(database: database, table: table)
             async let d = s.showCreateTable(database: database, table: table)
             columns = try await cols
@@ -152,6 +158,7 @@ struct StructureView: View {
 
 /// 表数据：分页网格
 struct DataView: View {
+    let connectionID: UUID
     let database: String
     let table: String
 
@@ -234,7 +241,7 @@ struct DataView: View {
         error = nil
         defer { loading = false }
         do {
-            let s = try await app.session()
+            let s = try await app.session(connectionID: connectionID)
             total = try await s.countRows(database: database, table: table)
             let clamped = min(max(0, newPage), pageCount - 1)
             let r = try await s.fetchRows(database: database, table: table, limit: pageSize, offset: clamped * pageSize)

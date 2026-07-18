@@ -166,7 +166,8 @@ public actor MySQLSession {
 
     public func listTables(in database: String) async throws -> [TableInfo] {
         let sql = """
-        SELECT TABLE_NAME, TABLE_TYPE, TABLE_ROWS, TABLE_COMMENT
+        SELECT TABLE_NAME, TABLE_TYPE, TABLE_ROWS, TABLE_COMMENT,
+               ENGINE, DATA_LENGTH, TABLE_COLLATION, CREATE_TIME, UPDATE_TIME
         FROM information_schema.TABLES
         WHERE TABLE_SCHEMA = \(SQL.quoteString(database))
         ORDER BY TABLE_NAME
@@ -177,7 +178,12 @@ public actor MySQLSession {
                 name: row[0] ?? "",
                 type: row[1] ?? "",
                 estimatedRows: row[2].flatMap { Int64($0) },
-                comment: row[3] ?? ""
+                comment: row[3] ?? "",
+                engine: row[4] ?? "",
+                dataLength: row[5].flatMap { Int64($0) },
+                collation: row[6] ?? "",
+                createdAt: row[7],
+                updatedAt: row[8]
             )
         }
     }

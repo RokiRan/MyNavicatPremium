@@ -4,6 +4,7 @@ import SwiftUI
 /// SQL 查询编辑器
 struct QueryView: View {
     let tabID: UUID
+    let connectionID: UUID
     let initialDatabase: String?
 
     @EnvironmentObject var app: AppState
@@ -15,8 +16,9 @@ struct QueryView: View {
     @State private var duration: TimeInterval?
     @State private var errorMessage: String?
 
-    init(tabID: UUID, initialDatabase: String?) {
+    init(tabID: UUID, connectionID: UUID, initialDatabase: String?) {
         self.tabID = tabID
+        self.connectionID = connectionID
         self.initialDatabase = initialDatabase
         _database = State(initialValue: initialDatabase)
         _sql = State(initialValue: initialDatabase.map { "-- 当前数据库: \($0)\n" } ?? "")
@@ -33,7 +35,7 @@ struct QueryView: View {
 
                 Picker("数据库", selection: $database) {
                     Text("不限定").tag(Optional<String>.none)
-                    ForEach(app.databases, id: \.self) { db in
+                    ForEach(app.node(for: connectionID).databases, id: \.self) { db in
                         Text(db).tag(Optional(db))
                     }
                 }
@@ -120,7 +122,7 @@ struct QueryView: View {
         Task {
             defer { running = false }
             do {
-                let s = try await app.session()
+                let s = try await app.session(connectionID: connectionID)
                 var batch: [String] = []
                 if let database {
                     batch.append("USE \(SQL.qi(database))")

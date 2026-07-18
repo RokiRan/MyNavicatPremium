@@ -37,6 +37,14 @@ public struct TableInfo: Identifiable, Hashable, Sendable {
     public let type: String
     public let estimatedRows: Int64?
     public let comment: String
+    /// 引擎（视图无引擎，为空串）
+    public let engine: String
+    /// 数据字节数（视图通常为 NULL）
+    public let dataLength: Int64?
+    public let collation: String
+    /// information_schema 的 CREATE_TIME / UPDATE_TIME；文本协议原样返回，可能为 NULL
+    public let createdAt: String?
+    public let updatedAt: String?
 
     public var isView: Bool { type == "VIEW" }
 }

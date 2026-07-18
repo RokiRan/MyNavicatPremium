@@ -87,7 +87,7 @@ struct ConnectionManagerSheet: View {
         .frame(width: 620, height: 420)
         .onAppear {
             draft = app.connections
-            selection = app.activeConnectionID ?? draft.first?.id
+            selection = draft.first?.id
         }
     }
 
@@ -106,19 +106,19 @@ struct ConnectionManagerSheet: View {
     }
 
     private func save() {
+        let old = app.connections
         app.connections = draft
         app.persistConnections()
         dismiss()
-        // 配置可能变了，丢弃旧会话重连
-        if app.activeConnectionID != nil {
-            Task { await app.reconnectActive() }
-        }
+        // 被删除或改动的连接要丢弃旧会话；未变的连接保持现状
+        app.applyConnectionChanges(from: old)
     }
 }
 
 // MARK: - 导出
 
 struct ExportSheet: View {
+    let connectionID: UUID
     let database: String
     let table: String
 
@@ -203,7 +203,7 @@ struct ExportSheet: View {
         progressRows = 0
         Task {
             do {
-                let s = try await app.session()
+                let s = try await app.session(connectionID: connectionID)
                 let n = try await Exporter.export(
                     session: s,
                     database: database,
@@ -228,14 +228,16 @@ struct ExportSheet: View {
 // MARK: - 跨库迁移
 
 struct MigrationSheet: View {
-    let sourceDB: String
+    let request: MigrationRequest
 
     @EnvironmentObject var app: AppState
     @Environment(\.dismiss) private var dismiss
 
     @State private var targetConnectionID: UUID?
     @State private var targetDBs: [String] = []
-    @State private var targetDBName = ""
+    /// 目标库选择：已有库名，或 Self.newTag（新建）
+    @State private var targetDBSelection = ""
+    @State private var newDBName = ""
     @State private var createStructure = true
     @State private var dropIfExists = true
     @State private var selectedTables: Set<String> = []
@@ -245,13 +247,28 @@ struct MigrationSheet: View {
     @State private var message: String?
     @State private var failed = false
 
+    /// Picker 里「新建数据库…」的占位 tag，不会与真实库名冲突
+    private static let newTag = "\u{1}new-database"
+
+    private var effectiveTargetDB: String {
+        targetDBSelection == Self.newTag ? newDBName.trimmingCharacters(in: .whitespaces) : targetDBSelection
+    }
+
+    private var sourceConnection: ConnectionConfig? {
+        app.config(for: request.sourceConnectionID)
+    }
+
+    private var sourceTables: [TableInfo] {
+        app.tables(for: request.sourceConnectionID, database: request.sourceDB)
+    }
+
     private var targetConnection: ConnectionConfig? {
         app.connections.first { $0.id == targetConnectionID }
     }
 
     /// 同连接同库 = 源，执行会先 DROP 掉源表，必须禁止
     private var isSameAsSource: Bool {
-        targetConnectionID == app.activeConnectionID && targetDBName == sourceDB
+        targetConnectionID == request.sourceConnectionID && effectiveTargetDB == request.sourceDB
     }
 
     var body: some View {
@@ -261,7 +278,7 @@ struct MigrationSheet: View {
             HStack(alignment: .top) {
                 Form {
                     LabeledContent("来源") {
-                        Text("\(app.activeConnection?.name ?? "-") · \(sourceDB)")
+                        Text("\(sourceConnection?.name ?? "-") · \(request.sourceDB)")
                     }
                     Picker("目标连接", selection: $targetConnectionID) {
                         ForEach(app.connections) { c in
@@ -270,13 +287,16 @@ struct MigrationSheet: View {
                     }
                     .onChange(of: targetConnectionID) { _, _ in loadTargetDBs() }
 
-                    Picker("目标已有库", selection: $targetDBName) {
-                        Text("（选择已有库）").tag("")
+                    Picker("目标库", selection: $targetDBSelection) {
                         ForEach(targetDBs, id: \.self) { db in
                             Text(db).tag(db)
                         }
+                        Divider()
+                        Text("新建数据库…").tag(Self.newTag)
                     }
-                    TextField("新库名（自动创建）", text: $targetDBName)
+                    if targetDBSelection == Self.newTag {
+                        TextField("新库名", text: $newDBName)
+                    }
 
                     Toggle("迁移结构（建表语句）", isOn: $createStructure)
                     Toggle("覆盖已存在的表", isOn: $dropIfExists)
@@ -286,13 +306,13 @@ struct MigrationSheet: View {
 
                 VStack(alignment: .leading) {
                     HStack {
-                        Text("选择表 (\(selectedTables.count)/\(app.tables.count))")
+                        Text("选择表 (\(selectedTables.count)/\(sourceTables.count))")
                         Spacer()
-                        Button("全选") { selectedTables = Set(app.tables.map(\.name)) }
+                        Button("全选") { selectedTables = Set(sourceTables.map(\.name)) }
                         Button("清空") { selectedTables = [] }
                     }
                     .font(.caption)
-                    List(app.tables) { t in
+                    List(sourceTables) { t in
                         HStack {
                             Image(systemName: selectedTables.contains(t.name) ? "checkmark.square.fill" : "square")
                                 .foregroundStyle(selectedTables.contains(t.name) ? Color.accentColor : .secondary)
@@ -346,16 +366,26 @@ struct MigrationSheet: View {
                     .disabled(running)
                 Button("开始迁移") { start() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(running || selectedTables.isEmpty || targetDBName.isEmpty || targetConnection == nil || isSameAsSource)
+                    .disabled(running || selectedTables.isEmpty || effectiveTargetDB.isEmpty || targetConnection == nil || isSameAsSource)
             }
         }
         .padding()
         .frame(width: 680, height: 560)
         .onAppear {
-            targetConnectionID = app.activeConnectionID
-            targetDBName = sourceDB
-            selectedTables = Set(app.tables.map(\.name))
+            targetConnectionID = request.targetConnectionID ?? request.sourceConnectionID
+            selectedTables = request.preselected ?? Set(sourceTables.map(\.name))
             loadTargetDBs()
+        }
+    }
+
+    /// 目标库默认值：优先请求预填的库；目标连接没有该库时切到「新建」
+    private func applyDefaultTargetDB() {
+        let want = request.targetDB ?? request.sourceDB
+        if targetDBs.contains(want) {
+            targetDBSelection = want
+        } else {
+            targetDBSelection = Self.newTag
+            if newDBName.isEmpty { newDBName = want }
         }
     }
 
@@ -363,8 +393,9 @@ struct MigrationSheet: View {
         guard let target = targetConnection else { return }
         Task {
             do {
-                let s = try await app.session(for: target)
+                let s = try await app.session(connectionID: target.id)
                 targetDBs = try await s.listDatabases()
+                applyDefaultTargetDB()
             } catch {
                 message = "目标连接失败：\(describe(error))"
                 failed = true
@@ -379,20 +410,20 @@ struct MigrationSheet: View {
         message = nil
         logs = []
         progressText = ""
-        let tables = app.tables.filter { selectedTables.contains($0.name) }
+        let tables = sourceTables.filter { selectedTables.contains($0.name) }
         let options = MigrationOptions(
             createDatabaseIfMissing: true,
             createStructure: createStructure,
             dropIfExists: dropIfExists
         )
-        let targetDB = targetDBName
+        let targetDB = effectiveTargetDB
         Task {
             do {
-                let source = try await app.session()
-                let targetSession = try await app.session(for: target)
+                let source = try await app.session(connectionID: request.sourceConnectionID)
+                let targetSession = try await app.session(connectionID: target.id)
                 let total = try await Migrator.migrate(
                     source: source,
-                    sourceDB: sourceDB,
+                    sourceDB: request.sourceDB,
                     tables: tables,
                     target: targetSession,
                     targetDB: targetDB,

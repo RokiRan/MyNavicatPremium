@@ -277,4 +277,110 @@ final class IntegrationTests: XCTestCase {
         XCTAssertEqual(arr?.count, 1)
         XCTAssertEqual(arr?[0]["note"] as? String, "a\nb\tc\u{1}")
     }
+
+    // MARK: - 数据编辑
+
+    func testRowEditorLiterals() {
+        let text = ColumnInfo(name: "name", columnType: "varchar(64)", isNullable: false, key: "PRI", defaultValue: nil, extra: "", comment: "")
+        let blob = ColumnInfo(name: "avatar", columnType: "blob", isNullable: true, key: "", defaultValue: nil, extra: "", comment: "")
+        // WHERE 条件
+        XCTAssertEqual(RowEditor.matchCondition(column: text, displayValue: nil), "`name` IS NULL")
+        XCTAssertEqual(RowEditor.matchCondition(column: text, displayValue: "O'Brien"), "`name` = 'O\\\'Brien'")
+        XCTAssertEqual(RowEditor.matchCondition(column: blob, displayValue: "0xdeadBEEF"), "`avatar` = X'deadBEEF'")
+        // 输入字面量
+        XCTAssertEqual(RowEditor.inputLiteral(nil, column: text), "NULL")
+        XCTAssertEqual(RowEditor.inputLiteral("0x0102ff", column: blob), "X'0102ff'")
+        // 文本列里的 "0x.." 是普通字符串，不当 hex
+        XCTAssertEqual(RowEditor.inputLiteral("0xzz", column: blob), "'0xzz'")
+        XCTAssertEqual(RowEditor.inputLiteral("0x0102", column: text), "'0x0102'")
+    }
+
+    private func column(_ name: String, in cols: [ColumnInfo]) -> ColumnInfo {
+        cols.first { $0.name == name }!
+    }
+
+    func testPrimaryKeyColumns() async throws {
+        try await makeSampleTable()
+        let pk = try await session.primaryKeyColumns(database: dbA, table: "users")
+        XCTAssertEqual(pk.map(\.name), ["id"])
+    }
+
+    func testUpdateRow() async throws {
+        try await makeSampleTable()
+        let cols = try await session.tableColumns(database: dbA, table: "users")
+        let affected = try await session.updateRow(
+            database: dbA, table: "users",
+            identity: [(column("id", in: cols), "1")],
+            set: [(column("name", in: cols), "王五"), (column("balance", in: cols), "-3.25")]
+        )
+        XCTAssertEqual(affected, 1)
+        let r = try await session.execute("SELECT name, balance FROM \(dbA).users WHERE id = 1")
+        XCTAssertEqual(r.rows[0][0], "王五")
+        XCTAssertEqual(r.rows[0][1], "-3.25")
+    }
+
+    func testUpdateRowNullAndBinary() async throws {
+        try await makeSampleTable()
+        let cols = try await session.tableColumns(database: dbA, table: "users")
+        // 第 3 行：email 有值、avatar = 0xDEADBEEF -> 置 NULL / 改 hex
+        try await session.updateRow(
+            database: dbA, table: "users",
+            identity: [(column("id", in: cols), "3")],
+            set: [(column("email", in: cols), nil), (column("avatar", in: cols), "0x0102")]
+        )
+        let r = try await session.execute("SELECT email, HEX(avatar) FROM \(dbA).users WHERE id = 3")
+        XCTAssertNil(r.rows[0][0])
+        XCTAssertEqual(r.rows[0][1], "0102")
+    }
+
+    func testInsertRow() async throws {
+        try await makeSampleTable()
+        let cols = try await session.tableColumns(database: dbA, table: "users")
+        // id 自增列由调用方剔除；email 显式写 NULL
+        let affected = try await session.insertRow(
+            database: dbA, table: "users",
+            values: [(column("name", in: cols), "赵六"), (column("email", in: cols), nil)]
+        )
+        XCTAssertEqual(affected, 1)
+        let r = try await session.execute("SELECT id, name, email FROM \(dbA).users WHERE name = '赵六'")
+        XCTAssertEqual(r.rows.count, 1)
+        XCTAssertNotNil(r.rows[0][0]) // 自增 id 已生成
+        XCTAssertNil(r.rows[0][2])
+    }
+
+    func testDeleteRow() async throws {
+        try await makeSampleTable()
+        let cols = try await session.tableColumns(database: dbA, table: "users")
+        let affected = try await session.deleteRow(
+            database: dbA, table: "users",
+            identity: [(column("id", in: cols), "2")]
+        )
+        XCTAssertEqual(affected, 1)
+        let remaining = try await session.countRows(database: dbA, table: "users")
+        XCTAssertEqual(remaining, 2)
+        // 再删一次：已无此行，affectedRows = 0 但不报错
+        let again = try await session.deleteRow(
+            database: dbA, table: "users",
+            identity: [(column("id", in: cols), "2")]
+        )
+        XCTAssertEqual(again, 0)
+    }
+
+    func testRowEditNoPrimaryKeyRejected() async throws {
+        try await session.execute("CREATE TABLE \(dbA).nopk (a INT)")
+        try await session.execute("INSERT INTO \(dbA).nopk VALUES (1)")
+        let cols = try await session.tableColumns(database: dbA, table: "nopk")
+        do {
+            _ = try await session.deleteRow(database: dbA, table: "nopk", identity: [])
+            XCTFail("无主键表 deleteRow 应抛错")
+        } catch MyNavicatError.noPrimaryKey {
+            // 预期
+        }
+        do {
+            _ = try await session.updateRow(database: dbA, table: "nopk", identity: [], set: [(cols[0], "2")])
+            XCTFail("无主键表 updateRow 应抛错")
+        } catch MyNavicatError.noPrimaryKey {
+            // 预期
+        }
+    }
 }

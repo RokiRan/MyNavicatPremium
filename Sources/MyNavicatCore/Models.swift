@@ -86,12 +86,16 @@ public enum MyNavicatError: Error, LocalizedError {
     case invalidConfig(String)
     case exportFailed(String)
     case migrationFailed(String)
+    case noPrimaryKey(String)
+    case editFailed(String)
 
     public var errorDescription: String? {
         switch self {
         case .invalidConfig(let m): return "连接配置无效：\(m)"
         case .exportFailed(let m): return "导出失败：\(m)"
         case .migrationFailed(let m): return "迁移失败：\(m)"
+        case .noPrimaryKey(let t): return "表 \(t) 没有主键，无法定位行进行编辑/删除"
+        case .editFailed(let m): return "编辑失败：\(m)"
         }
     }
 }

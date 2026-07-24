@@ -30,7 +30,7 @@ struct QueryView: View {
                 Button { run() } label: {
                     Label("运行", systemImage: "play.fill")
                 }
-                .keyboardShortcut(.return, modifiers: .command)
+                .keyboardShortcut("r", modifiers: .command)
                 .disabled(running || sql.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                 Picker("数据库", selection: $database) {
@@ -50,8 +50,7 @@ struct QueryView: View {
             }
             .padding(8)
 
-            TextEditor(text: $sql)
-                .font(.system(.body, design: .monospaced))
+            SQLEditor(text: $sql)
                 .frame(minHeight: 120, maxHeight: 220)
                 .border(Color(nsColor: .separatorColor))
 

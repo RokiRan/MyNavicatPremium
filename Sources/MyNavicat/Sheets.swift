@@ -225,6 +225,110 @@ struct ExportSheet: View {
     }
 }
 
+// MARK: - 数据库导出（SQL 转储）
+
+struct DatabaseExportSheet: View {
+    let connectionID: UUID
+    let database: String
+
+    @EnvironmentObject var app: AppState
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var includeStructure = true
+    @State private var includeData = true
+    @State private var destURL: URL?
+    @State private var running = false
+    @State private var currentObject: String?
+    @State private var progressRows = 0
+    @State private var message: String?
+    @State private var failed = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("导出数据库 \(database)").font(.headline)
+
+            Form {
+                Toggle("包含结构 (DROP + CREATE，含视图定义)", isOn: $includeStructure)
+                Toggle("包含数据 (INSERT 语句)", isOn: $includeData)
+                HStack {
+                    Text(destURL?.path ?? "未选择")
+                        .foregroundStyle(destURL == nil ? .secondary : .primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("选择位置…") { chooseDestination() }
+                }
+            }
+
+            if running {
+                HStack {
+                    ProgressView().scaleEffect(0.7)
+                    if let currentObject {
+                        Text("正在导出 \(currentObject)（累计 \(progressRows) 行）…")
+                    } else {
+                        Text("准备中…")
+                    }
+                }
+            }
+            if let message {
+                Text(message)
+                    .foregroundStyle(failed ? .red : .green)
+                    .textSelection(.enabled)
+            }
+
+            Spacer()
+            HStack {
+                Spacer()
+                Button("关闭") { dismiss() }
+                Button("开始导出") { start() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(destURL == nil || running || (!includeStructure && !includeData))
+            }
+        }
+        .padding()
+        .frame(width: 520, height: 300)
+    }
+
+    private func chooseDestination() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(database).sql"
+        if panel.runModal() == .OK {
+            destURL = panel.url
+        }
+    }
+
+    private func start() {
+        guard let destURL else { return }
+        running = true
+        message = nil
+        failed = false
+        progressRows = 0
+        currentObject = nil
+        Task {
+            do {
+                let s = try await app.session(connectionID: connectionID)
+                let r = try await Exporter.exportDatabase(
+                    session: s,
+                    database: database,
+                    to: destURL,
+                    options: ExportOptions(includeStructure: includeStructure, includeData: includeData),
+                    progress: { name, n in
+                        Task { @MainActor [self] in
+                            currentObject = name
+                            progressRows = n
+                        }
+                    }
+                )
+                message = "完成：\(r.objects) 个对象，共导出 \(r.rows) 行 → \(destURL.path)"
+            } catch {
+                failed = true
+                message = describe(error)
+            }
+            running = false
+        }
+    }
+}
+
 // MARK: - 跨库迁移
 
 struct MigrationSheet: View {
@@ -441,6 +545,110 @@ struct MigrationSheet: View {
                 message = describe(error)
             }
             running = false
+        }
+    }
+}
+
+// MARK: - 新建数据库
+
+struct CreateDatabaseSheet: View {
+    let connectionID: UUID
+
+    @EnvironmentObject var app: AppState
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var name = ""
+    /// 完整排序规则选项（SHOW COLLATION），字符集列表由此去重
+    @State private var options: [CollationOption] = []
+    /// 空串 = 服务器默认
+    @State private var charset = ""
+    @State private var collation = ""
+    @State private var loading = true
+    @State private var creating = false
+    @State private var errorMessage: String?
+
+    private var charsets: [String] {
+        var seen = Set<String>()
+        return options.compactMap { seen.insert($0.charset).inserted ? $0.charset : nil }
+    }
+
+    private var collationsForCharset: [CollationOption] {
+        options.filter { $0.charset == charset }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                TextField("数据库名", text: $name)
+                Picker("字符集", selection: $charset) {
+                    Text("服务器默认").tag("")
+                    ForEach(charsets, id: \.self) { c in
+                        Text(c).tag(c)
+                    }
+                }
+                Picker("排序规则", selection: $collation) {
+                    Text("默认").tag("")
+                    ForEach(collationsForCharset, id: \.collation) { o in
+                        Text(o.isDefault ? "\(o.collation)（默认）" : o.collation).tag(o.collation)
+                    }
+                }
+                .disabled(charset.isEmpty)
+            }
+            .formStyle(.grouped)
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal)
+            }
+
+            Divider()
+            HStack {
+                if loading {
+                    ProgressView().scaleEffect(0.6).frame(width: 14, height: 14)
+                    Text("读取字符集…").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("取消") { dismiss() }
+                Button("创建") { create() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(creating || name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            .padding()
+        }
+        .frame(width: 420)
+        .task {
+            do {
+                options = try await app.collationOptions(connectionID)
+                // 预选 utf8mb4（若存在），贴合当下建库惯例
+                if charsets.contains("utf8mb4") { charset = "utf8mb4" }
+            } catch {
+                // 拿不到排序规则不阻塞建库，退化为全默认
+                errorMessage = "无法读取字符集列表：\(describe(error))"
+            }
+            loading = false
+        }
+        // 切换字符集时清空排序规则选择，避免残留不匹配项
+        .onChange(of: charset) { collation = "" }
+    }
+
+    private func create() {
+        creating = true
+        errorMessage = nil
+        Task {
+            do {
+                try await app.createDatabase(
+                    connectionID,
+                    name: name,
+                    charset: charset.isEmpty ? nil : charset,
+                    collation: collation.isEmpty ? nil : collation
+                )
+                dismiss()
+            } catch {
+                errorMessage = describe(error)
+                creating = false
+            }
         }
     }
 }

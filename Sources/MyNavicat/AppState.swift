@@ -255,6 +255,19 @@ final class AppState: ObservableObject {
         await connect(id)
     }
 
+    /// 新建数据库并刷新侧栏库列表；失败抛给调用方（弹窗内展示）
+    func createDatabase(_ connectionID: UUID, name: String, charset: String?, collation: String?) async throws {
+        let s = try await session(connectionID: connectionID)
+        try await s.createDatabase(name: name, charset: charset, collation: collation)
+        await refreshDatabases(connectionID)
+    }
+
+    /// 建库对话框的排序规则选项
+    func collationOptions(_ connectionID: UUID) async throws -> [CollationOption] {
+        let s = try await session(connectionID: connectionID)
+        return try await s.listCollations()
+    }
+
     // MARK: - 表列表
 
     /// 有缓存则直接用；没有则后台加载（展开库节点 / 打开对象视图时调用）

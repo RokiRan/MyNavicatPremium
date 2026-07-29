@@ -32,6 +32,7 @@ final class IntegrationTests: XCTestCase {
     override func tearDown() async throws {
         try? await session.execute("DROP DATABASE IF EXISTS \(dbA)")
         try? await session.execute("DROP DATABASE IF EXISTS \(dbB)")
+        try? await session.execute("DROP DATABASE IF EXISTS mynavicat_test_created")
         await session.close()
     }
 
@@ -181,6 +182,71 @@ final class IntegrationTests: XCTestCase {
         try await session.executeBatch(["USE \(dbB)"] + statements)
         let count = try await session.countRows(database: dbB, table: "users")
         XCTAssertEqual(count, 3)
+    }
+
+    func testCreateDatabase() async throws {
+        let db = "mynavicat_test_created"
+        // 清理由 tearDown 负责
+        try await session.createDatabase(name: db, charset: "utf8mb4", collation: "utf8mb4_bin")
+        let dbs = try await session.listDatabases()
+        XCTAssertTrue(dbs.contains(db))
+        let r = try await session.execute("""
+        SELECT DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME
+        FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '\(db)'
+        """)
+        let schemataRow = try XCTUnwrap(r.rows.first)
+        XCTAssertEqual(schemataRow[0], "utf8mb4")
+        XCTAssertEqual(schemataRow[1], "utf8mb4_bin")
+
+        // 空名与非法字符集/排序规则必须在客户端拒绝，不打到服务器
+        do {
+            try await session.createDatabase(name: "  ")
+            XCTFail("空库名应抛错")
+        } catch {}
+        do {
+            try await session.createDatabase(name: "x", charset: "utf8mb4; DROP TABLE t")
+            XCTFail("非法字符集应抛错")
+        } catch {}
+        do {
+            try await session.createDatabase(name: "x", collation: "a-b")
+            XCTFail("非法排序规则应抛错")
+        } catch {}
+    }
+
+    func testExportDatabaseDumpAndReplay() async throws {
+        try await makeSampleTable()
+        try await session.execute("CREATE VIEW \(dbA).user_names AS SELECT id, name FROM \(dbA).users")
+
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("exp_db_test.sql")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let r = try await Exporter.exportDatabase(session: session, database: dbA, to: url)
+        XCTAssertEqual(r.objects, 2)   // 1 表 + 1 视图
+        XCTAssertEqual(r.rows, 3)      // 视图不计数据行
+
+        let content = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(content.contains("CREATE DATABASE IF NOT EXISTS \(SQL.qi(dbA))"))
+        XCTAssertTrue(content.contains("USE \(SQL.qi(dbA))"))
+        XCTAssertTrue(content.contains("INSERT INTO \(SQL.qi("users"))"))
+        XCTAssertTrue(content.contains("DROP VIEW IF EXISTS \(SQL.qi("user_names"))"))
+        // 视图只导定义，不导数据
+        XCTAssertFalse(content.contains("INSERT INTO \(SQL.qi("user_names"))"))
+
+        // 整库重放：删掉原库后用转储重建，验证可往返。
+        // 注释行按行剥除而不是整条丢弃——转储头注释和 CREATE DATABASE 在同一分块里
+        try await session.execute("DROP DATABASE \(dbA)")
+        let statements = SQL.splitStatements(content).map { stmt in
+            stmt.components(separatedBy: "\n")
+                .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("--") }
+                .joined(separator: "\n")
+        }.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        try await session.executeBatch(statements)
+        let count = try await session.countRows(database: dbA, table: "users")
+        XCTAssertEqual(count, 3)
+        let viewRows = try await session.countRows(database: dbA, table: "user_names")
+        XCTAssertEqual(viewRows, 3)
+        let name = try await session.execute("SELECT name FROM \(dbA).users WHERE id = 1")
+        let nameRow = try XCTUnwrap(name.rows.first)
+        XCTAssertEqual(nameRow[0], "张三")
     }
 
     func testMigration() async throws {

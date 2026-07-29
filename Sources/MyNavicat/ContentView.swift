@@ -14,6 +14,8 @@ struct ContentView: View {
     @State private var showConnections = false
     @State private var exportRequest: ExportRequest?
     @State private var migrationRequest: MigrationRequest?
+    @State private var createDatabaseTarget: CreateDatabaseRequest?
+    @State private var databaseExportRequest: DatabaseExportRequest?
     @State private var sidebarSelection: SidebarSelection?
     /// 展开的节点：连接 / 数据库 / 类别
     @State private var expanded: Set<String> = []
@@ -37,6 +39,12 @@ struct ContentView: View {
         }
         .sheet(item: $migrationRequest) { req in
             MigrationSheet(request: req)
+        }
+        .sheet(item: $createDatabaseTarget) { req in
+            CreateDatabaseSheet(connectionID: req.connectionID)
+        }
+        .sheet(item: $databaseExportRequest) { req in
+            DatabaseExportSheet(connectionID: req.connectionID, database: req.database)
         }
         .alert("提示", isPresented: $app.showAlert) {
             Button("好") { app.alertMessage = nil }
@@ -149,6 +157,8 @@ struct ContentView: View {
                 Divider()
                 Button("新建查询") { app.newQuery(connectionID: conn.id) }
                     .disabled(!node.connected)
+                Button("新建数据库…") { createDatabaseTarget = CreateDatabaseRequest(connectionID: conn.id) }
+                    .disabled(!node.connected)
                 Divider()
                 Button("连接属性…") { showConnections = true }
             }
@@ -184,6 +194,9 @@ struct ContentView: View {
                 Divider()
                 Button("刷新表列表") { Task { await app.refreshTables(conn.id, database: db) } }
                 Divider()
+                Button("导出数据库…") {
+                    databaseExportRequest = DatabaseExportRequest(connectionID: conn.id, database: db)
+                }
                 Button("迁移整个库到…") {
                     migrationRequest = MigrationRequest(
                         sourceConnectionID: conn.id, sourceDB: db,
@@ -413,6 +426,19 @@ struct ExportRequest: Identifiable {
     let connectionID: UUID
     let database: String
     let table: String
+}
+
+/// 新建数据库弹窗请求
+struct CreateDatabaseRequest: Identifiable {
+    let id = UUID()
+    let connectionID: UUID
+}
+
+/// 数据库导出弹窗请求
+struct DatabaseExportRequest: Identifiable {
+    let id = UUID()
+    let connectionID: UUID
+    let database: String
 }
 
 /// 侧栏数据库节点的 NSDropDelegate：同时接受新拖拽会话（itemProvider）

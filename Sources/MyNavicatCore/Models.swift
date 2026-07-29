@@ -30,6 +30,20 @@ public struct ConnectionConfig: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+/// 排序规则选项：SHOW COLLATION 的一行，供建库对话框选择
+public struct CollationOption: Hashable, Sendable {
+    public let charset: String
+    public let collation: String
+    /// 是否该字符集的服务器默认排序规则
+    public let isDefault: Bool
+
+    public init(charset: String, collation: String, isDefault: Bool) {
+        self.charset = charset
+        self.collation = collation
+        self.isDefault = isDefault
+    }
+}
+
 public struct TableInfo: Identifiable, Hashable, Sendable {
     public var id: String { name }
     public let name: String

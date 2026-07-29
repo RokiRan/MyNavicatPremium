@@ -164,6 +164,38 @@ public actor MySQLSession {
         return r.rows.compactMap { $0.first ?? nil }
     }
 
+    /// 创建数据库；charset/collation 传 nil 则用服务器默认。
+    /// charset/collation 只允许字母数字下划线（取自 SHOW COLLATION），防止注入。
+    public func createDatabase(name: String, charset: String? = nil, collation: String? = nil) async throws {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else {
+            throw MyNavicatError.invalidConfig("数据库名不能为空")
+        }
+        var sql = "CREATE DATABASE \(SQL.qi(trimmed))"
+        if let charset, !charset.isEmpty {
+            guard charset.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) else {
+                throw MyNavicatError.invalidConfig("非法字符集：\(charset)")
+            }
+            sql += " CHARACTER SET \(charset)"
+        }
+        if let collation, !collation.isEmpty {
+            guard collation.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) else {
+                throw MyNavicatError.invalidConfig("非法排序规则：\(collation)")
+            }
+            sql += " COLLATE \(collation)"
+        }
+        try await execute(sql)
+    }
+
+    /// 排序规则选项（字符集, 排序规则, 是否该字符集默认），供建库对话框选择
+    public func listCollations() async throws -> [CollationOption] {
+        let r = try await execute("SHOW COLLATION")
+        return r.rows.compactMap { row in
+            guard row.count > 3, let collation = row[0], let charset = row[1] else { return nil }
+            return CollationOption(charset: charset, collation: collation, isDefault: row[3] == "Yes")
+        }
+    }
+
     public func listTables(in database: String) async throws -> [TableInfo] {
         let sql = """
         SELECT TABLE_NAME, TABLE_TYPE, TABLE_ROWS, TABLE_COMMENT,
